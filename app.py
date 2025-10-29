@@ -3,6 +3,19 @@ from datetime import datetime
 import os
 from pytrends.request import TrendReq
 import numpy as np
+import os
+import math
+from typing import Tuple, List
+from google.ads.googleads.client import GoogleAdsClient
+from google.ads.googleads.errors import GoogleAdsException
+# Language & Geo для України
+# Ukrainian language constant: 1029  -> "languageConstants/1029"
+# Ukraine geo target ID:       2276  -> "geoTargetConstants/2276"
+GA_LANGUAGE_UA = "languageConstants/1029"
+GA_GEO_UA = "geoTargetConstants/2276"
+
+# Кеш клієнта, щоб не створювати щоразу
+_google_ads_client = None
 
 app = Flask(__name__)
 
@@ -57,22 +70,116 @@ def _geo_from_region(region: str) -> str:
     region = (region or "").upper().strip()
     return region if len(region) in (0, 2) else ""
 
-def fetch_keyword_metrics(keyword: str, region: str):
-    demo = {
-        'gaba tea': (8100, 32, 0.42, 38),
-        'oolong tea': (12000, 45, 0.36, 62),
-        "lion's mane": (22000, 28, 1.20, 33),
-        "ginger tea": (6600, 35, 0.27, 41),
-        "keemun tea": (5400, 31, 0.29, 37),
-    }
-    return demo.get(keyword.lower(), (2000, 40, 0.30, 45))
+def _load_google_ads_client() -> GoogleAdsClient:
+    global _google_ads_client
+    if _google_ads_client is not None:
+        return _google_ads_client
 
+    cfg = {
+        "developer_token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
+        "login_customer_id": os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", None),
+        "use_proto_plus": True,
+        "oauth2": {
+            "client_id": os.getenv("GOOGLE_ADS_CLIENT_ID"),
+            "client_secret": os.getenv("GOOGLE_ADS_CLIENT_SECRET"),
+            "refresh_token": os.getenv("GOOGLE_ADS_REFRESH_TOKEN"),
+        },
+    }
+    # Видаляємо login_customer_id, якщо не заданий
+    if not cfg["login_customer_id"]:
+        cfg.pop("login_customer_id")
+    _google_ads_client = GoogleAdsClient.load_from_dict(cfg)
+    return _google_ads_client
+
+def _competition_to_0_100(comp_enum_val: int) -> int:
+    """
+    Перемаплює Google Ads competition enum у 0..100:
+    LOW=0, MEDIUM=50, HIGH=100, UNSPECIFIED/UNKNOWN=25
+    """
+    # Enum у різних версіях трохи відрізняється, але значення зводимо вручну:
+    # 0-UNSPECIFIED, 1-UNKNOWN, 2-LOW, 3-MEDIUM, 4-HIGH
+    mapping = {2: 20, 3: 60, 4: 90, 0: 25, 1: 25}
+    return mapping.get(comp_enum_val, 50)
+
+def micros_to_usd(micros: int) -> float:
+    # Google повертає ставки у мікро-валюті
+    if micros is None:
+        return 0.0
+    return round(float(micros) / 1_000_000.0, 2)
+
+def fetch_keyword_metrics(keyword: str, region: str) -> Tuple[int, int, float, int]:
+    """
+    Реальні дані з Google Ads Keyword Plan Idea Service:
+    - volume_monthly
+    - kd            (беремо як proxy: конкуренція у 0..100)
+    - cpc_usd       (Top of page bid high)
+    - competition_0_100
+    """
+    try:
+        client = _load_google_ads_client()
+        customer_id = os.getenv("GOOGLE_ADS_CUSTOMER_ID")
+        if not customer_id:
+            raise RuntimeError("GOOGLE_ADS_CUSTOMER_ID is not set")
+
+        srv = client.get_service("KeywordPlanIdeaService")
+        req = client.get_type("GenerateKeywordIdeasRequest")
+
+        # Країна: тільки UA зараз. Якщо region != 'UA', можна додати мапу.
+        req.customer_id = customer_id
+        req.language = GA_LANGUAGE_UA
+        req.geo_target_constants.append(GA_GEO_UA)
+        req.keyword_plan_network = client.enums.KeywordPlanNetworkEnum.GOOGLE_SEARCH_AND_PARTNERS
+
+        # Джерело ідей — сам ключ
+        req.keyword_seed.keywords.append(keyword)
+
+        resp = srv.generate_keyword_ideas(request=req)
+
+        # Беремо перший збіг по ключу (або найрелевантніший)
+        best = None
+        for idea in resp:
+            text = idea.text or ""
+            metrics = idea.keyword_idea_metrics
+            if not metrics:
+                continue
+
+            avg = metrics.avg_monthly_searches or 0
+            comp_enum = int(metrics.competition) if metrics.competition is not None else 1
+            comp_0_100 = _competition_to_0_100(comp_enum)
+            cpc_high = micros_to_usd(metrics.high_top_of_page_bid_micros)
+            # простий пріоритет — за найбільшим avg_monthly_searches
+            row = (avg, comp_0_100, cpc_high, text)
+            if best is None or row[0] > best[0]:
+                best = row
+
+        if best is None:
+            return (0, 0, 0.0, 0)
+
+        volume = int(best[0])
+        competition_0_100 = int(best[1])
+        cpc_usd = float(best[2])
+
+        # kd як proxy: можна дорівняти конкуренції або трансформувати
+        kd = competition_0_100
+
+        return (volume, kd, cpc_usd, competition_0_100)
+
+    except GoogleAdsException as gae:
+        # Лог у консолі Render
+        print(f"GoogleAdsException: {gae}")
+        return (0, 0, 0.0, 0)
+    except Exception as e:
+        print(f"fetch_keyword_metrics error for '{keyword}': {e}")
+        return (0, 0, 0.0, 0)
+        
 def score_potential(volume, kd, trend_score, competition):
-    vol_norm = min(volume / 10000, 1.0) * 10.0
-    kd_norm = (100 - min(max(kd, 0), 100)) / 10.0
-    comp_norm = (100 - min(max(competition, 0), 100)) / 10.0
-    base = (vol_norm + trend_score + kd_norm + comp_norm) / 4.0
-    return round(base, 1)
+    # volume: 0..∞ → нормалізуємо логарифмічно
+    vol_norm = min(math.log10(max(volume, 1) + 1) * 3.3, 10.0)  # 0..~10
+    kd_norm = (100 - min(max(kd, 0), 100)) / 10.0               # 0..10 (низька складність = краще)
+    comp_norm = (100 - min(max(competition, 0), 100)) / 10.0    # 0..10
+    # Ваги: volume 45%, trend 35%, конкуренція 20%
+    score = (vol_norm * 0.45) + (trend_score * 0.35) + (comp_norm * 0.20)
+    return round(min(max(score, 0.0), 10.0), 1)
 
 @app.route('/')
 def home():
