@@ -223,6 +223,34 @@ def analyze():
 
     return jsonify({'results': results})
 
+@app.route('/selftest', methods=['GET'])
+def selftest():
+    out = {"env": {}, "ads": {}, "trends": {}}
+
+    # ENV-перевірка
+    keys = ["GOOGLE_ADS_DEVELOPER_TOKEN","GOOGLE_ADS_CLIENT_ID","GOOGLE_ADS_CLIENT_SECRET",
+            "GOOGLE_ADS_REFRESH_TOKEN","GOOGLE_ADS_CUSTOMER_ID","GOOGLE_ADS_LOGIN_CUSTOMER_ID"]
+    for k in keys:
+        v = os.getenv(k)
+        out["env"][k] = bool(v)
+
+    # Перевірка Ads одним запитом
+    try:
+        vol, kd, cpc, comp = fetch_keyword_metrics("погода", "UA")
+        out["ads"]["sample"] = {"keyword":"погода","vol":vol,"kd":kd,"cpc":cpc,"comp":comp}
+    except Exception as e:
+        out["ads"]["error"] = str(e)
+
+    # Перевірка Trends
+    try:
+        ts, td = fetch_trends_score("купити чай", "UA", 12)
+        out["trends"]["sample"] = {"keyword":"купити чай","score":ts,"dir":td}
+    except Exception as e:
+        out["trends"]["error"] = str(e)
+
+    return jsonify(out)
+
+
 if __name__ == '__main__':
     # Render задає PORT у змінній середовища. Ми це врахували:
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
