@@ -1,18 +1,59 @@
 from flask import Flask, request, jsonify
 from datetime import datetime
 import os
+from pytrends.request import TrendReq
+import numpy as np
 
 app = Flask(__name__)
 
 def fetch_trends_score(keyword: str, region: str, months: int = 12):
-    base = {
-        'gaba tea': (8.6, 'rising'),
-        "oolong tea": (5.1, 'stable'),
-        "lion's mane": (9.0, 'rising'),
-        "ginger tea": (7.2, 'rising'),
-        "keemun tea": (6.4, 'stable'),
-    }
-    return base.get(keyword.lower(), (6.0, 'stable'))
+    """
+    Повертає (trend_score_0_10, trend_direction)
+    На основі реальних даних Google Trends за останні N місяців.
+    """
+    try:
+        pytrends = TrendReq(hl='uk-UA', tz=180)
+        geo = _geo_from_region(region)
+        timeframe = f"today {months}-m"
+        kw = keyword.strip()
+        if not kw:
+            return (5.0, "stable")
+
+        pytrends.build_payload([kw], timeframe=timeframe, geo=geo)
+        df = pytrends.interest_over_time()
+
+        if df.empty or kw not in df.columns:
+            return (5.0, "stable")
+
+        series = df[kw].astype(float)
+        if len(series) < 3:
+            return (5.0, "stable")
+
+        # Нормалізуємо середнє та нахил
+        arr = series.values
+        mean_val = np.mean(arr)              # 0..100
+        x = np.arange(len(arr))
+        slope = np.polyfit(x, arr, 1)[0]     # нахил лінійного тренду
+
+        # Перетворимо в 0..10:
+        # середнє -> 0..10, нахил -> -2..+2 (обрізання), потім додаємо до бази
+        mean_score = (mean_val / 10.0)                  # 0..10
+        slope_norm = max(min(slope, 2.0), -2.0) / 2.0   # -1..+1
+        base = mean_score + slope_norm
+
+        # Легке згладжування/обрізання
+        trend_score = float(max(0.0, min(10.0, round(base, 1))))
+        direction = "rising" if slope > 0.25 else ("falling" if slope < -0.25 else "stable")
+        return (trend_score, direction)
+    except Exception:
+        # На випадок лімітів чи помилок — нейтральне значення
+        return (5.0, "stable")
+        
+def _geo_from_region(region: str) -> str:
+    # UA / PL / US ... -> код для Google Trends
+    # Якщо регіон невідомий — беремо глобально (geo="")
+    region = (region or "").upper().strip()
+    return region if len(region) in (0, 2) else ""
 
 def fetch_keyword_metrics(keyword: str, region: str):
     demo = {
