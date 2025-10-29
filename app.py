@@ -22,11 +22,13 @@ def fetch_trends_score(keyword: str, region: str, months: int = 12):
         pytrends.build_payload([kw], timeframe=timeframe, geo=geo)
         df = pytrends.interest_over_time()
 
-        if df.empty or kw not in df.columns:
+        # Якщо зовсім порожньо або даних < 10 — вважаємо, що недостатньо
+        if df.empty or kw not in df.columns or len(df) < 10:
             return (5.0, "stable")
 
         series = df[kw].astype(float)
-        if len(series) < 3:
+        # Якщо середнє менше 2 — даних реально замало (низький інтерес)
+        if series.mean() < 2:
             return (5.0, "stable")
 
         # Нормалізуємо середнє та нахил
