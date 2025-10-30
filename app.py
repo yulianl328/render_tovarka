@@ -188,6 +188,38 @@ def fetch_keyword_metrics(keyword: str, region: str) -> Tuple[int, int, float, i
         print(f"fetch_keyword_metrics error for '{keyword}': {e}")
         return (0, 0, 0.0, 0)
         
+def fetch_keyword_metrics_variant(keyword: str, lang_const: str, network_name: str):
+    try:
+        client = _load_google_ads_client()
+        customer_id = os.getenv("GOOGLE_ADS_CUSTOMER_ID")
+        srv = client.get_service("KeywordPlanIdeaService")
+        req = client.get_type("GenerateKeywordIdeasRequest")
+        req.customer_id = customer_id
+        req.language = lang_const
+        req.geo_target_constants.append(GA_GEO_UA)
+        net_enum = client.enums.KeywordPlanNetworkEnum
+        req.keyword_plan_network = getattr(net_enum, network_name)
+        req.keyword_seed.keywords.append(keyword)
+
+        best = None
+        cnt = 0
+        for idea in srv.generate_keyword_ideas(request=req):
+            cnt += 1
+            m = idea.keyword_idea_metrics
+            if not m: 
+                continue
+            avg = m.avg_monthly_searches or 0
+            comp = _competition_to_0_100(int(m.competition) if m.competition is not None else 1)
+            cpc = micros_to_usd(m.high_top_of_page_bid_micros)
+            row = (avg, comp, cpc)
+            if best is None or row[0] > best[0]:
+                best = row
+        # повернемо нулі, якщо ідей 0
+        return (0,0,0) if best is None else (int(best[0]), int(best[1]), float(best[2]))
+    except Exception:
+        return (0,0,0)
+
+
 def score_potential(volume, kd, trend_score, competition):
     # volume: 0..∞ → нормалізуємо логарифмічно
     vol_norm = min(math.log10(max(volume, 1) + 1) * 3.3, 10.0)  # 0..~10
@@ -247,32 +279,43 @@ def selftest():
     for k in keys:
         out["env"][k] = bool(os.getenv(k))
 
-    # 1) покажемо акаунти, до яких є доступ під цим refresh-token
     try:
         client = _load_google_ads_client()
+        # 1) Список доступних акаунтів під цим OAuth
         svc = client.get_service("CustomerService")
         custs = [c for c in svc.list_accessible_customers().resource_names]
-        out["ads"]["accessible_customers"] = custs  # наприклад ['customers/1234567890', ...]
-    except Exception as e:
-        out["ads"]["accessible_customers_error"] = str(e)
+        out["ads"]["accessible_customers"] = custs  # вигляд 'customers/1234567890'
 
-    # 2) проба Keyword Ideas з UA і EN
+        # 2) Перевіримо GAQL на customer для вказаного CUSTOMER_ID
+        ga = client.get_service("GoogleAdsService")
+        customer_id = os.getenv("GOOGLE_ADS_CUSTOMER_ID")
+        query = "SELECT customer.id, customer.descriptive_name FROM customer LIMIT 1"
+        rows = ga.search(customer_id=customer_id, query=query)
+        out["ads"]["gaql_customer_probe"] = [
+            {"id": r.customer.id, "name": r.customer.descriptive_name} for r in rows
+        ]
+    except Exception as e:
+        out["ads"]["access_error"] = str(e)
+
+    # 3) Спробуємо Keyword Ideas різними налаштуваннями
     try:
-        vol1, kd1, cpc1, comp1 = fetch_keyword_metrics("погода", "UA")
-        vol2, kd2, cpc2, comp2 = fetch_keyword_metrics("weather", "UA")
-        out["ads"]["sample_ua"] = {"kw": "погода", "vol": vol1, "cpc": cpc1, "comp": comp1}
-        out["ads"]["sample_en"] = {"kw": "weather", "vol": vol2, "cpc": cpc2, "comp": comp2}
+        out["ads"]["ideas"] = {}
+        for lang in ("languageConstants/1029", "languageConstants/1000"):
+            for net in ("GOOGLE_SEARCH", "GOOGLE_SEARCH_AND_PARTNERS"):
+                vol, kd, cpc, comp = fetch_keyword_metrics_variant("weather", lang, net)
+                out["ads"]["ideas"][f"{lang}_{net}"] = {"vol": vol, "cpc": cpc, "comp": comp}
     except Exception as e:
         out["ads"]["ideas_error"] = str(e)
 
-    # 3) trends як і було
+    # Trends як було
     try:
         ts, td = fetch_trends_score("купити чай", "UA", 12)
-        out["trends"]["sample"] = {"kw": "купити чай", "score": ts, "dir": td}
+        out["trends"]["sample"] = {"kw":"купити чай","score": ts,"dir": td}
     except Exception as e:
         out["trends"]["error"] = str(e)
 
     return jsonify(out)
+
 
 
 
