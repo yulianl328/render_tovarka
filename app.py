@@ -226,29 +226,38 @@ def analyze():
 @app.route('/selftest', methods=['GET'])
 def selftest():
     out = {"env": {}, "ads": {}, "trends": {}}
-
-    # ENV-перевірка
     keys = ["GOOGLE_ADS_DEVELOPER_TOKEN","GOOGLE_ADS_CLIENT_ID","GOOGLE_ADS_CLIENT_SECRET",
             "GOOGLE_ADS_REFRESH_TOKEN","GOOGLE_ADS_CUSTOMER_ID","GOOGLE_ADS_LOGIN_CUSTOMER_ID"]
     for k in keys:
-        v = os.getenv(k)
-        out["env"][k] = bool(v)
+        out["env"][k] = bool(os.getenv(k))
 
-    # Перевірка Ads одним запитом
+    # 1) покажемо акаунти, до яких є доступ під цим refresh-token
     try:
-        vol, kd, cpc, comp = fetch_keyword_metrics("погода", "UA")
-        out["ads"]["sample"] = {"keyword":"погода","vol":vol,"kd":kd,"cpc":cpc,"comp":comp}
+        client = _load_google_ads_client()
+        svc = client.get_service("CustomerService")
+        custs = [c for c in svc.list_accessible_customers().resource_names]
+        out["ads"]["accessible_customers"] = custs  # наприклад ['customers/1234567890', ...]
     except Exception as e:
-        out["ads"]["error"] = str(e)
+        out["ads"]["accessible_customers_error"] = str(e)
 
-    # Перевірка Trends
+    # 2) проба Keyword Ideas з UA і EN
+    try:
+        vol1, kd1, cpc1, comp1 = fetch_keyword_metrics("погода", "UA")
+        vol2, kd2, cpc2, comp2 = fetch_keyword_metrics("weather", "UA")
+        out["ads"]["sample_ua"] = {"kw": "погода", "vol": vol1, "cpc": cpc1, "comp": comp1}
+        out["ads"]["sample_en"] = {"kw": "weather", "vol": vol2, "cpc": cpc2, "comp": comp2}
+    except Exception as e:
+        out["ads"]["ideas_error"] = str(e)
+
+    # 3) trends як і було
     try:
         ts, td = fetch_trends_score("купити чай", "UA", 12)
-        out["trends"]["sample"] = {"keyword":"купити чай","score":ts,"dir":td}
+        out["trends"]["sample"] = {"kw": "купити чай", "score": ts, "dir": td}
     except Exception as e:
         out["trends"]["error"] = str(e)
 
     return jsonify(out)
+
 
 
 if __name__ == '__main__':
