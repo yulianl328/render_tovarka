@@ -78,35 +78,35 @@ def _load_google_ads_client() -> GoogleAdsClient:
     if _google_ads_client is not None:
         return _google_ads_client
 
-    dev = (os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN") or "").strip()
-    cid = (os.getenv("GOOGLE_ADS_CLIENT_ID") or "").strip()
-    csec = (os.getenv("GOOGLE_ADS_CLIENT_SECRET") or "").strip()
-    rtok = (os.getenv("GOOGLE_ADS_REFRESH_TOKEN") or "").strip()
-    login_cust = (os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID") or "").strip()
+    dev   = (os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN")   or "").strip()
+    cid   = (os.getenv("GOOGLE_ADS_CLIENT_ID")         or "").strip()
+    csec  = (os.getenv("GOOGLE_ADS_CLIENT_SECRET")     or "").strip()
+    rtok  = (os.getenv("GOOGLE_ADS_REFRESH_TOKEN")     or "").strip()
+    login = (os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID") or "").strip()
 
-    # Логи без витоку: показуємо довжини і останні 4 символи
-    def _mask(v):
-        return f"{len(v)}:{v[-4:] if len(v)>=4 else v}"
-
-    log.info(f"[ADS][ENV] dev={_mask(dev)} cid={_mask(cid)} csec={_mask(csec)} rtok={_mask(rtok)} login_cust={login_cust}")
+    def mask(v): return f"{len(v)}:{v[-4:] if len(v)>=4 else v}"
+    log.info(f"[ADS][ENV] dev={mask(dev)} cid={mask(cid)} csec={mask(csec)} rtok={mask(rtok)} login_cust={login}")
 
     if not dev:
         raise RuntimeError("[ADS] Missing GOOGLE_ADS_DEVELOPER_TOKEN")
-    if not cid or not csec or not rtok:
+    if not (cid and csec and rtok):
         raise RuntimeError("[ADS] Missing OAuth2 creds: CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN")
 
+    # 👉 ПЛОСКА конфігурація (без 'oauth2' всередині)
     cfg = {
         "developer_token": dev,
+        "client_id": cid,
+        "client_secret": csec,
+        "refresh_token": rtok,
         "use_proto_plus": True,
-        "oauth2": {"client_id": cid, "client_secret": csec, "refresh_token": rtok},
     }
-    if login_cust:
-        cfg["login_customer_id"] = login_cust
+    if login:
+        cfg["login_customer_id"] = login  # ID MCC (без дефісів)
 
     _google_ads_client = GoogleAdsClient.load_from_dict(cfg)
     log.info("[ADS] Client loaded OK")
     return _google_ads_client
-
+    
 def _competition_to_0_100(comp_enum_val: int) -> int:
     """
     Перемаплює Google Ads competition enum у 0..100:
@@ -299,11 +299,11 @@ def selftest():
 
     # 3) Спробуємо Keyword Ideas різними налаштуваннями
     try:
-        out["ads"]["ideas"] = {}
-        for lang in ("languageConstants/1029", "languageConstants/1000"):
-            for net in ("GOOGLE_SEARCH", "GOOGLE_SEARCH_AND_PARTNERS"):
-                vol, kd, cpc, comp = fetch_keyword_metrics_variant("weather", lang, net)
-                out["ads"]["ideas"][f"{lang}_{net}"] = {"vol": vol, "cpc": cpc, "comp": comp}
+       out["ads"]["ideas"] = {}
+       for lang in ("languageConstants/1029", "languageConstants/1000"):
+           for net in ("GOOGLE_SEARCH", "GOOGLE_SEARCH_AND_PARTNERS"):
+               vol, comp, cpc = fetch_keyword_metrics_variant("weather", lang, net)
+               out["ads"]["ideas"][f"{lang}_{net}"] = {"vol": vol, "cpc": cpc, "comp": comp}
     except Exception as e:
         out["ads"]["ideas_error"] = str(e)
 
