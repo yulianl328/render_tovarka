@@ -8,6 +8,9 @@ import math
 from typing import Tuple, List
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+import logging
+log = logging.getLogger("pf")
+logging.basicConfig(level=logging.INFO)
 # Language & Geo для України
 # Ukrainian language constant: 1029  -> "languageConstants/1029"
 # Ukraine geo target ID:       2276  -> "geoTargetConstants/2276"
@@ -75,20 +78,33 @@ def _load_google_ads_client() -> GoogleAdsClient:
     if _google_ads_client is not None:
         return _google_ads_client
 
+    dev = (os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN") or "").strip()
+    cid = (os.getenv("GOOGLE_ADS_CLIENT_ID") or "").strip()
+    csec = (os.getenv("GOOGLE_ADS_CLIENT_SECRET") or "").strip()
+    rtok = (os.getenv("GOOGLE_ADS_REFRESH_TOKEN") or "").strip()
+    login_cust = (os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID") or "").strip()
+
+    # Логи без витоку: показуємо довжини і останні 4 символи
+    def _mask(v):
+        return f"{len(v)}:{v[-4:] if len(v)>=4 else v}"
+
+    log.info(f"[ADS][ENV] dev={_mask(dev)} cid={_mask(cid)} csec={_mask(csec)} rtok={_mask(rtok)} login_cust={login_cust}")
+
+    if not dev:
+        raise RuntimeError("[ADS] Missing GOOGLE_ADS_DEVELOPER_TOKEN")
+    if not cid or not csec or not rtok:
+        raise RuntimeError("[ADS] Missing OAuth2 creds: CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN")
+
     cfg = {
-        "developer_token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),
-        "login_customer_id": os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", None),
+        "developer_token": dev,
         "use_proto_plus": True,
-        "oauth2": {
-            "client_id": os.getenv("GOOGLE_ADS_CLIENT_ID"),
-            "client_secret": os.getenv("GOOGLE_ADS_CLIENT_SECRET"),
-            "refresh_token": os.getenv("GOOGLE_ADS_REFRESH_TOKEN"),
-        },
+        "oauth2": {"client_id": cid, "client_secret": csec, "refresh_token": rtok},
     }
-    # Видаляємо login_customer_id, якщо не заданий
-    if not cfg["login_customer_id"]:
-        cfg.pop("login_customer_id")
+    if login_cust:
+        cfg["login_customer_id"] = login_cust
+
     _google_ads_client = GoogleAdsClient.load_from_dict(cfg)
+    log.info("[ADS] Client loaded OK")
     return _google_ads_client
 
 def _competition_to_0_100(comp_enum_val: int) -> int:
